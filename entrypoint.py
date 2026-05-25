@@ -59,19 +59,26 @@ def parse_args(argv):
     return parser.parse_args(argv[1:])
 
 
-def _substitution_args(substitutions: dict[str, str]) -> list[str]:
-    """Convert a substitutions dict into ESPHome ``-s key value`` CLI args."""
+def parse_substitutions(items: list[str]) -> tuple[list[str], int]:
+    """Parse KEY=VALUE strings into flat ``-s KEY VALUE`` args for ESPHome."""
     args: list[str] = []
-    for key, value in substitutions.items():
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not sep:
+            print(f"::error::Invalid substitution {item!r}: expected KEY=VALUE")
+            return [], 2
+        if not key:
+            print(f"::error::Invalid substitution {item!r}: key cannot be empty")
+            return [], 2
         args += ["-s", key, value]
-    return args
+    return args, 0
 
 
-def compile_firmware(filename: Path, substitutions: dict[str, str]) -> int:
+def compile_firmware(filename: Path, substitution_args: list[str]) -> int:
     """Compile the firmware."""
     print("::group::Compile firmware")
     rc = subprocess.run(
-        ["esphome"] + _substitution_args(substitutions) + ["compile", filename],
+        ["esphome"] + substitution_args + ["compile", filename],
         stdout=sys.stdout,
         stderr=sys.stderr,
         check=False,
@@ -197,12 +204,12 @@ def parse_config(config_dict: dict) -> tuple[Config | None, int]:
     ), 0
 
 
-def get_config(filename: Path, outputs_file: str | None, substitutions: dict[str, str]) -> tuple[Config | None, int]:
+def get_config(filename: Path, outputs_file: str | None, substitution_args: list[str]) -> tuple[Config | None, int]:
     """Run `esphome config` and parse the validated YAML into a Config."""
     print("::group::Get config")
     try:
         raw = subprocess.check_output(
-            ["esphome"] + _substitution_args(substitutions) + ["config", filename],
+            ["esphome"] + substitution_args + ["config", filename],
             stderr=sys.stderr,
         )
     except subprocess.CalledProcessError as e:
@@ -231,12 +238,12 @@ def get_config(filename: Path, outputs_file: str | None, substitutions: dict[str
     return config, 0
 
 
-def get_idedata(filename: Path, substitutions: dict[str, str]) -> tuple[dict | None, int]:
+def get_idedata(filename: Path, substitution_args: list[str]) -> tuple[dict | None, int]:
     """Get the IDEData."""
     print("::group::Get IDEData")
     try:
         idedata = subprocess.check_output(
-            ["esphome"] + _substitution_args(substitutions) + ["idedata", filename],
+            ["esphome"] + substitution_args + ["idedata", filename],
             stderr=sys.stderr,
         )
     except subprocess.CalledProcessError as e:
@@ -299,21 +306,18 @@ def main(argv) -> int:
 
     filename = Path(args.configuration)
 
-    # Parse the list of "KEY=VALUE" strings into a dict, splitting on the
-    # first '=' only so that values containing '=' are preserved correctly.
-    substitutions: dict[str, str] = {}
-    for item in args.substitutions:
-        key, _, value = item.partition("=")
-        substitutions[key] = value
+    substitution_args, rc = parse_substitutions(args.substitutions)
+    if rc != 0:
+        return rc
 
-    if (rc := compile_firmware(filename, substitutions)) != 0:
+    if (rc := compile_firmware(filename, substitution_args)) != 0:
         return rc
 
     esphome_version, rc = get_esphome_version(args.outputs_file)
     if rc != 0:
         return rc
 
-    config, rc = get_config(filename, args.outputs_file, substitutions)
+    config, rc = get_config(filename, args.outputs_file, substitution_args)
     if rc != 0:
         return rc
 
@@ -321,7 +325,7 @@ def main(argv) -> int:
 
     file_base = Path(config.name)
 
-    idedata, rc = get_idedata(filename, substitutions)
+    idedata, rc = get_idedata(filename, substitution_args)
     if rc != 0:
         return rc
 
